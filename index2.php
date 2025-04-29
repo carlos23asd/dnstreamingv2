@@ -133,7 +133,7 @@
     <video id="video-player" class="reproductor" controls autoplay muted></video>
     <h2 class="subtitulo">Lista de Reproducción</h2>
     <ul class="lista-reproduccion">
-      <li data-url-hls="#">Canal 1</li>
+      <li data-url-hls="168.231.71.30:8080/hls/0/stream.m3u8?">Canal 1</li>
       <li data-url-hls="#">Canal 2</li>
       <li data-url-hls="#">Canal 3</li>
     </ul>
