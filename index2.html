@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <base href="">
+  <meta charset="UTF-8">
+  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reproductor de Video con HLS</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script>
+    const SUPABASE_URL = 'https://udaloepzgkgjvbyzkhmy.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVkYWxvZXB6Z2tnanZieXpraG15Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDA0NDk2NjYsImV4cCI6MjA1NjAyNTY2Nn0.VcY3iVmYTfb5V0wYoGY3HPyNHKwcrTjA55Lf_lE_NL8';
+    window.supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  </script>
+  <style>
+    /* --- Estilos mejorados --- */
+    :root {
+      --primary-color: #6c5ce7;
+      --secondary-color: #a29bfe;
+      --accent-color: #fd79a8;
+      --background: #f9f9f9;
+      --text-color: #2d3436;
+    }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 0; padding: 20px;
+      background: linear-gradient(135deg, #a8e6cf 0%, #dcedc1 100%);
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 1200px;
+      margin: auto;
+      padding: 30px;
+      background: rgba(255,255,255,0.95);
+      border-radius: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+      backdrop-filter: blur(10px);
+    }
+    .titulo {
+      font-size: 42px;
+      text-align: center;
+      font-weight: bold;
+      color: var(--primary-color);
+      margin-bottom: 20px;
+      position: relative;
+      padding-bottom: 15px;
+    }
+    .titulo::after {
+      content: '';
+      width: 100px; height: 4px;
+      background: linear-gradient(to right, var(--primary-color), var(--accent-color));
+      position: absolute; bottom: 0; left: 50%;
+      transform: translateX(-50%);
+      border-radius: 2px;
+    }
+    .subtitulo {
+      font-size: 28px;
+      margin-top: 30px;
+      margin-bottom: 15px;
+      text-align: center;
+      color: var(--text-color);
+    }
+    video.reproductor {
+      width: 100%;
+      height: 500px;
+      border-radius: 15px;
+      background: black;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+      transition: transform 0.3s, box-shadow 0.3s;
+    }
+    video.reproductor:hover {
+      transform: scale(1.01);
+      box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+    }
+    ul.lista-reproduccion {
+      list-style: none;
+      padding: 0;
+      margin-top: 20px;
+      background: white;
+      border-radius: 15px;
+      overflow: hidden;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+    }
+    .lista-reproduccion li {
+      padding: 15px 20px;
+      cursor: pointer;
+      border-bottom: 1px solid rgba(0,0,0,0.05);
+      transition: all 0.3s;
+      display: flex;
+      align-items: center;
+    }
+    .lista-reproduccion li:hover {
+      background: rgba(108, 92, 231, 0.05);
+      padding-left: 25px;
+    }
+    .lista-reproduccion li::before {
+      content: '▶';
+      margin-right: 10px;
+      opacity: 0;
+      transform: translateX(-10px);
+      transition: all 0.3s;
+      color: var(--primary-color);
+    }
+    .lista-reproduccion li:hover::before {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    .lista-reproduccion .seleccionado {
+      background: linear-gradient(to right, var(--primary-color), var(--secondary-color));
+      color: white;
+      font-weight: bold;
+    }
+    .footer {
+      margin-top: 30px;
+      text-align: center;
+      font-size: 14px;
+      color: var(--text-color);
+      opacity: 0.8;
+      border-top: 1px solid rgba(0,0,0,0.1);
+      padding: 20px;
+    }
+    @media(max-width:768px){
+      video.reproductor { height: 250px; }
+      .titulo { font-size: 32px; }
+      .subtitulo { font-size: 24px; }
+    }
+    .badge-lento {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(46, 204, 113, 0.12);
+      color: #2ecc71;
+      border: 1px solid rgba(46, 204, 113, 0.35);
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      visibility: hidden;
+    }
+    .badge-lento.visible { visibility: visible; }
+    .overlay-buffering {
+      display: none;
+      position: absolute;
+      left: 0; right: 0;
+      top: 0; bottom: 0;
+      background: rgba(0,0,0,0.35);
+      color: #fff;
+      font-weight: 600;
+      backdrop-filter: blur(2px);
+      border-radius: 15px;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+    }
+    .player-wrap { position: relative; }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1 class="titulo">Deportes en Vivo</h1>
+    <div style="display:flex; justify-content: space-between; align-items:center; margin-bottom: 12px;">
+      <div style="display:flex; gap:10px; align-items:center;">
+        <span id="badge-lento" class="badge-lento">Modo conexión lenta</span>
+        <span id="viewer-count" style="font-weight:600;color:#2d3436;">Espectadores: <span id="viewer-count-num">0</span></span>
+      </div>
+      <button id="logout-btn" style="background:#e74c3c;color:#fff;border:none;border-radius:8px;padding:8px 12px;cursor:pointer;">Cerrar sesión</button>
+    </div>
+    <div class="player-wrap">
+      <video id="video-player" class="reproductor" controls autoplay muted></video>
+      <div id="overlay-buffering" class="overlay-buffering">
+        Acumulando buffer por conexión lenta...
+      </div>
+    </div>
+    <h2 class="subtitulo">Lista de Reproducción</h2>
+    <ul class="lista-reproduccion">
+      <li data-url-hls="168.231.71.30:8080/hls/0/stream.m3u8?">Canal 1</li>
+      <li data-url-hls="#">Canal 2</li>
+      <li data-url-hls="#">Canal 3</li>
+    </ul>
+
+    <div class="footer">
+      Derechos reservados a sus respectivos creadores.
+    </div>
+  </div>
+
+<script>
+const videoPlayer = document.getElementById('video-player');
+const listaReproduccion = document.querySelector('.lista-reproduccion');
+const logoutBtn = document.getElementById('logout-btn');
+const slowBadge = document.getElementById('badge-lento');
+const bufferingOverlay = document.getElementById('overlay-buffering');
+const viewerCountEl = document.getElementById('viewer-count-num');
+let hls;
+let canalSeleccionado = null;
+let currentStreamUrl = null;
+let renewTimerId = null;
+const RENEW_BUFFER_MS = 30000;
+const SLOW_BANDWIDTH_BPS = 1_000_000; // 1 Mbps
+const LONG_BUFFERING_MS = 3000; // 3s
+let isSlowMode = false;
+let bufferingTimerId = null;
+let presenceChannel = null;
+let presenceTopic = null;
+
+async function ensureAuthenticated() {
+  const { data: { session } } = await window.supabaseClient.auth.getSession();
+  if (!session) {
+    window.location.href = 'index.html';
+  }
+}
+
+function normalizeUrl(possibleUrl) {
+  if (!/^https?:\/\//i.test(possibleUrl)) {
+    return 'http://' + possibleUrl;
+  }
+  return possibleUrl;
+}
+
+function parseExpiresSecondsFromUrl(urlString) {
+  try {
+    const u = new URL(urlString);
+    const exp = u.searchParams.get('expires');
+    if (!exp) return null;
+    const expNum = Number(exp);
+    return Number.isFinite(expNum) ? expNum : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function stripAuthParams(urlString) {
+  try {
+    const u = new URL(urlString);
+    u.searchParams.delete('token');
+    u.searchParams.delete('expires');
+    return u.toString();
+  } catch (_) {
+    return urlString;
+  }
+}
+
+function scheduleTokenRenewal(urlString) {
+  if (renewTimerId) {
+    clearTimeout(renewTimerId);
+    renewTimerId = null;
+  }
+  const expiresSec = parseExpiresSecondsFromUrl(urlString);
+  if (!expiresSec) return;
+  const msUntilExpiry = expiresSec * 1000 - Date.now();
+  const msUntilRenew = msUntilExpiry - RENEW_BUFFER_MS;
+  if (msUntilRenew <= 0) {
+    renewAndReload('expired');
+    return;
+  }
+  renewTimerId = setTimeout(() => renewAndReload('scheduled'), msUntilRenew);
+}
+
+async function getFreshSignedUrl(baseUrl) {
+  try {
+    // const { data, error } = await window.supabaseClient.functions.invoke('renew_stream', { body: { baseUrl } });
+    // if (error) throw error;
+    // if (data && data.url) return data.url;
+  } catch (e) {
+    console.error('Error al renovar URL firmada', e);
+  }
+  return currentStreamUrl || baseUrl;
+}
+
+async function renewAndReload(reason) {
+  if (!currentStreamUrl) return;
+  const baseUrl = stripAuthParams(currentStreamUrl);
+  const freshUrl = await getFreshSignedUrl(baseUrl);
+  reproducir(freshUrl, canalSeleccionado);
+}
+
+function reproducir(urlHls, elemento) {
+  if (canalSeleccionado) canalSeleccionado.classList.remove('seleccionado');
+  if (elemento) {
+    elemento.classList.add('seleccionado');
+    canalSeleccionado = elemento;
+  }
+
+  if (hls) {
+    hls.destroy();
+  }
+
+  const urlHlsNormalized = normalizeUrl(urlHls);
+  currentStreamUrl = urlHlsNormalized;
+  scheduleTokenRenewal(currentStreamUrl);
+  joinPresenceForUrl(currentStreamUrl);
+
+  if (Hls.isSupported()) {
+    const hlsConfig = { lowLatencyMode: false };
+    if (isSlowMode) {
+      Object.assign(hlsConfig, {
+        capLevelToPlayerSize: true,
+        startLevel: 0,
+        maxMaxBufferLength: 10,
+        maxBufferLength: 10,
+        maxBufferSize: 20 * 1000 * 1000,
+        maxStarvationDelay: 2,
+        abrEwmaFastLive: 2.0,
+        abrEwmaSlowLive: 5.0,
+        progressive: true
+      });
+    }
+    hls = new Hls(hlsConfig);
+    hls.loadSource(urlHlsNormalized);
+    hls.attachMedia(videoPlayer);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => videoPlayer.play());
+    hls.on(Hls.Events.ERROR, function(event, data) {
+      console.error('HLS error', data);
+      const status = data && data.response && data.response.code;
+      if (data && data.type === Hls.ErrorTypes.NETWORK_ERROR && (status === 401 || status === 403)) {
+        renewAndReload('http' + status);
+        return;
+      }
+      if (data && data.fatal) {
+        switch (data.type) {
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            renewAndReload('fatal-network');
+            break;
+          case Hls.ErrorTypes.MEDIA_ERROR:
+            hls.recoverMediaError();
+            break;
+          default:
+            hls.destroy();
+            reproducir(currentStreamUrl, canalSeleccionado);
+            break;
+        }
+      }
+    });
+    hls.on(Hls.Events.FRAG_LOADED, () => clearBufferingState());
+  } else if (videoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
+    videoPlayer.src = urlHlsNormalized;
+    videoPlayer.addEventListener('loadedmetadata', () => videoPlayer.play());
+  }
+}
+
+function setBufferingState() {
+  if (!isSlowMode) return;
+  if (bufferingTimerId) clearTimeout(bufferingTimerId);
+  bufferingTimerId = setTimeout(() => {
+    if (!videoPlayer.paused) {
+      videoPlayer.pause();
+    }
+    bufferingOverlay.style.display = 'flex';
+  }, LONG_BUFFERING_MS);
+}
+
+function clearBufferingState() {
+  if (bufferingTimerId) {
+    clearTimeout(bufferingTimerId);
+    bufferingTimerId = null;
+  }
+  bufferingOverlay.style.display = 'none';
+  if (isSlowMode && videoPlayer.paused && videoPlayer.readyState >= 2) {
+    videoPlayer.play().catch(() => {});
+  }
+}
+
+function channelKeyFromUrl(urlString) {
+  try {
+    const u = new URL(urlString);
+    return `${u.host}${u.pathname}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+  } catch (_) {
+    return 'stream_default';
+  }
+}
+
+function updateViewerCount(count) {
+  if (viewerCountEl) viewerCountEl.textContent = String(count);
+}
+
+function leavePresence() {
+  try {
+    if (presenceChannel) {
+      presenceChannel.unsubscribe();
+      presenceChannel = null;
+    }
+  } catch (e) {}
+}
+
+function joinPresenceForUrl(urlString) {
+  const key = channelKeyFromUrl(urlString);
+  const topic = `presence:stream:${key}`;
+  presenceTopic = topic;
+  leavePresence();
+  presenceChannel = window.supabaseClient.channel(topic, { config: { broadcast: { self: false }, presence: { key: Math.random().toString(36).slice(2) } } });
+  presenceChannel.on('presence', { event: 'sync' }, () => {
+    const state = presenceChannel.presenceState();
+    const count = Object.keys(state).length;
+    updateViewerCount(count);
+  });
+  presenceChannel.subscribe(async (status) => {
+    if (status === 'SUBSCRIBED') {
+      await presenceChannel.track({ online_at: new Date().toISOString() });
+    }
+  });
+}
+
+function estimateBandwidthBps() {
+  const navConn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (navConn && navConn.downlink) {
+    return navConn.downlink * 1_000_000;
+  }
+  return null;
+}
+
+listaReproduccion.addEventListener('click', (e) => {
+  if (e.target.tagName === 'LI') {
+    const urlHls = e.target.getAttribute('data-url-hls');
+    if (urlHls && urlHls !== '#') {
+      reproducir(urlHls, e.target);
+    }
+  }
+});
+
+logoutBtn.addEventListener('click', async () => {
+  await window.supabaseClient.auth.signOut();
+  leavePresence();
+  window.location.href = 'index.html';
+});
+
+(async function init() {
+  await ensureAuthenticated();
+  const bw = estimateBandwidthBps();
+  isSlowMode = bw !== null ? (bw < SLOW_BANDWIDTH_BPS) : false;
+  if (isSlowMode) {
+    slowBadge.classList.add('visible');
+  }
+
+  videoPlayer.addEventListener('waiting', setBufferingState);
+  videoPlayer.addEventListener('stalled', setBufferingState);
+  videoPlayer.addEventListener('playing', clearBufferingState);
+  videoPlayer.addEventListener('canplay', clearBufferingState);
+
+  const firstItem = listaReproduccion.querySelector('li[data-url-hls]:not([data-url-hls="#"])');
+  if (firstItem) {
+    reproducir(firstItem.getAttribute('data-url-hls'), firstItem);
+  }
+})();
+</script>
+
+</body>
+</html>
