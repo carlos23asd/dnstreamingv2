@@ -176,6 +176,11 @@
       </div>
     </div>
     <h2 class="subtitulo">Lista de Reproducción</h2>
+    <div style="display:flex; gap:8px; margin: 10px 0; flex-wrap: wrap;">
+      <input id="xtream-input" type="text" placeholder="Pega URL Xtream/HLS .m3u8" style="flex:1; min-width:260px; padding:10px; border:1px solid #ddd; border-radius:8px;">
+      <button id="xtream-add" style="background:#6c5ce7;color:#fff;border:none;border-radius:8px;padding:10px 12px;cursor:pointer;">Reproducir URL</button>
+    </div>
+    <div id="warn" style="display:none; color:#c0392b; font-weight:600; margin-bottom:8px;"></div>
     <ul class="lista-reproduccion">
       <li data-url-hls="168.231.71.30:8080/hls/0/stream.m3u8?">Canal 1</li>
       <li data-url-hls="#">Canal 2</li>
@@ -194,6 +199,9 @@ const logoutBtn = document.getElementById('logout-btn');
 const slowBadge = document.getElementById('badge-lento');
 const bufferingOverlay = document.getElementById('overlay-buffering');
 const viewerCountEl = document.getElementById('viewer-count-num');
+const xtreamInput = document.getElementById('xtream-input');
+const xtreamAddBtn = document.getElementById('xtream-add');
+const warnBox = document.getElementById('warn');
 let hls;
 let canalSeleccionado = null;
 let currentStreamUrl = null;
@@ -224,6 +232,13 @@ function normalizeUrl(possibleUrl) {
     return scheme + possibleUrl;
   }
   return possibleUrl;
+}
+
+function showWarn(msg) {
+  if (!warnBox) return;
+  warnBox.textContent = msg;
+  warnBox.style.display = 'block';
+  setTimeout(() => { warnBox.style.display = 'none'; }, 5000);
 }
 
 function parseExpiresSecondsFromUrl(urlString) {
@@ -347,6 +362,14 @@ function reproducir(urlHls, elemento) {
         renewAndReload('http' + status);
         return;
       }
+      if (data && data.type === Hls.ErrorTypes.NETWORK_ERROR && status === 0) {
+        // Posible CORS o Mixed Content
+        if (window.location.protocol === 'https:' && /^http:/.test(currentStreamUrl)) {
+          showWarn('Contenido mixto bloqueado (HTTP en página HTTPS). Usa URL HTTPS si está disponible.');
+        } else {
+          showWarn('Error de red/CORS al cargar el stream. Verifica permisos del servidor.');
+        }
+      }
       if (data && data.fatal) {
         switch (data.type) {
           case Hls.ErrorTypes.NETWORK_ERROR:
@@ -452,6 +475,21 @@ listaReproduccion.addEventListener('click', (e) => {
       reproducir(urlHls, e.target);
     }
   }
+});
+
+xtreamAddBtn.addEventListener('click', () => {
+  const raw = (xtreamInput.value || '').trim();
+  if (!raw) return;
+  const url = normalizeUrl(raw);
+  // Validar formato simple .m3u8
+  if (!/\.m3u8(\?|$)/i.test(url)) {
+    showWarn('La URL no parece un stream HLS (.m3u8).');
+  }
+  let item = document.createElement('li');
+  item.setAttribute('data-url-hls', url);
+  item.textContent = 'URL personalizada';
+  listaReproduccion.insertBefore(item, listaReproduccion.firstChild);
+  reproducir(url, item);
 });
 
 logoutBtn.addEventListener('click', async () => {
