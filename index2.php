@@ -129,6 +129,35 @@
       .titulo { font-size: 32px; }
       .subtitulo { font-size: 24px; }
     }
+    .badge-lento {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(46, 204, 113, 0.12);
+      color: #2ecc71;
+      border: 1px solid rgba(46, 204, 113, 0.35);
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      visibility: hidden;
+    }
+    .badge-lento.visible { visibility: visible; }
+    .overlay-buffering {
+      display: none;
+      position: absolute;
+      left: 0; right: 0;
+      top: 0; bottom: 0;
+      background: rgba(0,0,0,0.35);
+      color: #fff;
+      font-weight: 600;
+      backdrop-filter: blur(2px);
+      border-radius: 15px;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+    }
+    .player-wrap { position: relative; }
   </style>
 </head>
 
@@ -136,10 +165,15 @@
   <div class="container">
     <h1 class="titulo">Deportes en Vivo</h1>
     <div style="display:flex; justify-content: space-between; align-items:center; margin-bottom: 12px;">
-      <div></div>
+      <span id="badge-lento" class="badge-lento">Modo conexión lenta</span>
       <button id="logout-btn" style="background:#e74c3c;color:#fff;border:none;border-radius:8px;padding:8px 12px;cursor:pointer;">Cerrar sesión</button>
     </div>
-    <video id="video-player" class="reproductor" controls autoplay muted></video>
+    <div class="player-wrap">
+      <video id="video-player" class="reproductor" controls autoplay muted></video>
+      <div id="overlay-buffering" class="overlay-buffering">
+        Acumulando buffer por conexión lenta...
+      </div>
+    </div>
     <h2 class="subtitulo">Lista de Reproducción</h2>
     <ul class="lista-reproduccion">
       <li data-url-hls="168.231.71.30:8080/hls/0/stream.m3u8?">Canal 1</li>
@@ -156,11 +190,17 @@
 const videoPlayer = document.getElementById('video-player');
 const listaReproduccion = document.querySelector('.lista-reproduccion');
 const logoutBtn = document.getElementById('logout-btn');
+const slowBadge = document.getElementById('badge-lento');
+const bufferingOverlay = document.getElementById('overlay-buffering');
 let hls;
 let canalSeleccionado = null;
 let currentStreamUrl = null;
 let renewTimerId = null;
 const RENEW_BUFFER_MS = 30000;
+const SLOW_BANDWIDTH_BPS = 1_000_000; // 1 Mbps
+const LONG_BUFFERING_MS = 3000; // 3s
+let isSlowMode = false;
+let bufferingTimerId = null;
 
 function normalizeUrl(possibleUrl) {
   if (!/^https?:\/\//i.test(possibleUrl)) {
@@ -234,6 +274,16 @@ async function ensureAuthenticated() {
   }
 }
 
+function estimateBandwidthBps() {
+  // Heurística básica usando Network Information API (no disponible en todos los navegadores)
+  const navConn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (navConn && navConn.downlink) {
+    // downlink en Mbps
+    return navConn.downlink * 1_000_000;
+  }
+  return null;
+}
+
 function reproducir(urlHls, elemento) {
   if (canalSeleccionado) canalSeleccionado.classList.remove('seleccionado');
   if (elemento) {
@@ -250,7 +300,21 @@ function reproducir(urlHls, elemento) {
   scheduleTokenRenewal(currentStreamUrl);
 
   if (Hls.isSupported()) {
-    hls = new Hls();
+    const hlsConfig = { lowLatencyMode: false };
+    if (isSlowMode) {
+      Object.assign(hlsConfig, {
+        capLevelToPlayerSize: true,
+        startLevel: 0,
+        maxMaxBufferLength: 10,
+        maxBufferLength: 10,
+        maxBufferSize: 20 * 1000 * 1000,
+        maxStarvationDelay: 2,
+        abrEwmaFastLive: 2.0,
+        abrEwmaSlowLive: 5.0,
+        progressive: true
+      });
+    }
+    hls = new Hls(hlsConfig);
     hls.loadSource(urlHlsNormalized);
     hls.attachMedia(videoPlayer);
     hls.on(Hls.Events.MANIFEST_PARSED, () => videoPlayer.play());
@@ -276,9 +340,32 @@ function reproducir(urlHls, elemento) {
         }
       }
     });
+    hls.on(Hls.Events.FRAG_LOADED, () => clearBufferingState());
   } else if (videoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
     videoPlayer.src = urlHlsNormalized;
     videoPlayer.addEventListener('loadedmetadata', () => videoPlayer.play());
+  }
+}
+
+function setBufferingState() {
+  if (!isSlowMode) return;
+  if (bufferingTimerId) clearTimeout(bufferingTimerId);
+  bufferingTimerId = setTimeout(() => {
+    if (!videoPlayer.paused) {
+      videoPlayer.pause();
+    }
+    bufferingOverlay.style.display = 'flex';
+  }, LONG_BUFFERING_MS);
+}
+
+function clearBufferingState() {
+  if (bufferingTimerId) {
+    clearTimeout(bufferingTimerId);
+    bufferingTimerId = null;
+  }
+  bufferingOverlay.style.display = 'none';
+  if (isSlowMode && videoPlayer.paused && videoPlayer.readyState >= 2) {
+    videoPlayer.play().catch(() => {});
   }
 }
 
@@ -298,6 +385,18 @@ logoutBtn.addEventListener('click', async () => {
 
 (async function init() {
   await ensureAuthenticated();
+  const bw = estimateBandwidthBps();
+  isSlowMode = bw !== null ? (bw < SLOW_BANDWIDTH_BPS) : false;
+  if (isSlowMode) {
+    slowBadge.classList.add('visible');
+  }
+
+  // Eventos de buffering para pausar/reanudar en modo lento
+  videoPlayer.addEventListener('waiting', setBufferingState);
+  videoPlayer.addEventListener('stalled', setBufferingState);
+  videoPlayer.addEventListener('playing', clearBufferingState);
+  videoPlayer.addEventListener('canplay', clearBufferingState);
+
   const firstItem = listaReproduccion.querySelector('li[data-url-hls]:not([data-url-hls="#"])');
   if (firstItem) {
     reproducir(firstItem.getAttribute('data-url-hls'), firstItem);
