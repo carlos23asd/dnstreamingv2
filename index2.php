@@ -165,7 +165,10 @@
   <div class="container">
     <h1 class="titulo">Deportes en Vivo</h1>
     <div style="display:flex; justify-content: space-between; align-items:center; margin-bottom: 12px;">
-      <span id="badge-lento" class="badge-lento">Modo conexión lenta</span>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <span id="badge-lento" class="badge-lento">Modo conexión lenta</span>
+        <span id="viewer-count" style="font-weight:600;color:#2d3436;">Espectadores: <span id="viewer-count-num">0</span></span>
+      </div>
       <button id="logout-btn" style="background:#e74c3c;color:#fff;border:none;border-radius:8px;padding:8px 12px;cursor:pointer;">Cerrar sesión</button>
     </div>
     <div class="player-wrap">
@@ -192,6 +195,7 @@ const listaReproduccion = document.querySelector('.lista-reproduccion');
 const logoutBtn = document.getElementById('logout-btn');
 const slowBadge = document.getElementById('badge-lento');
 const bufferingOverlay = document.getElementById('overlay-buffering');
+const viewerCountEl = document.getElementById('viewer-count-num');
 let hls;
 let canalSeleccionado = null;
 let currentStreamUrl = null;
@@ -201,6 +205,8 @@ const SLOW_BANDWIDTH_BPS = 1_000_000; // 1 Mbps
 const LONG_BUFFERING_MS = 3000; // 3s
 let isSlowMode = false;
 let bufferingTimerId = null;
+let presenceChannel = null;
+let presenceTopic = null;
 
 function normalizeUrl(possibleUrl) {
   if (!/^https?:\/\//i.test(possibleUrl)) {
@@ -298,6 +304,7 @@ function reproducir(urlHls, elemento) {
   const urlHlsNormalized = normalizeUrl(urlHls);
   currentStreamUrl = urlHlsNormalized;
   scheduleTokenRenewal(currentStreamUrl);
+  joinPresenceForUrl(currentStreamUrl);
 
   if (Hls.isSupported()) {
     const hlsConfig = { lowLatencyMode: false };
@@ -369,6 +376,47 @@ function clearBufferingState() {
   }
 }
 
+function channelKeyFromUrl(urlString) {
+  try {
+    const u = new URL(urlString);
+    // Usa host + pathname como clave de stream
+    return `${u.host}${u.pathname}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+  } catch (_) {
+    return 'stream_default';
+  }
+}
+
+function updateViewerCount(count) {
+  if (viewerCountEl) viewerCountEl.textContent = String(count);
+}
+
+function leavePresence() {
+  try {
+    if (presenceChannel) {
+      presenceChannel.unsubscribe();
+      presenceChannel = null;
+    }
+  } catch (e) {}
+}
+
+function joinPresenceForUrl(urlString) {
+  const key = channelKeyFromUrl(urlString);
+  const topic = `presence:stream:${key}`;
+  presenceTopic = topic;
+  leavePresence();
+  presenceChannel = window.supabaseClient.channel(topic, { config: { broadcast: { self: false }, presence: { key: Math.random().toString(36).slice(2) } } });
+  presenceChannel.on('presence', { event: 'sync' }, () => {
+    const state = presenceChannel.presenceState();
+    const count = Object.keys(state).length;
+    updateViewerCount(count);
+  });
+  presenceChannel.subscribe(async (status) => {
+    if (status === 'SUBSCRIBED') {
+      await presenceChannel.track({ online_at: new Date().toISOString() });
+    }
+  });
+}
+
 listaReproduccion.addEventListener('click', (e) => {
   if (e.target.tagName === 'LI') {
     const urlHls = e.target.getAttribute('data-url-hls');
@@ -380,6 +428,7 @@ listaReproduccion.addEventListener('click', (e) => {
 
 logoutBtn.addEventListener('click', async () => {
   await window.supabaseClient.auth.signOut();
+  leavePresence();
   window.location.href = 'index.html';
 });
 
