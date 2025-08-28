@@ -176,11 +176,6 @@
       </div>
     </div>
     <h2 class="subtitulo">Lista de Reproducción</h2>
-    <div style="display:flex; gap:8px; margin: 10px 0; flex-wrap: wrap;">
-      <input id="xtream-input" type="text" placeholder="Pega URL Xtream/HLS .m3u8" style="flex:1; min-width:260px; padding:10px; border:1px solid #ddd; border-radius:8px;">
-      <button id="xtream-add" style="background:#6c5ce7;color:#fff;border:none;border-radius:8px;padding:10px 12px;cursor:pointer;">Reproducir URL</button>
-    </div>
-    <div id="warn" style="display:none; color:#c0392b; font-weight:600; margin-bottom:8px;"></div>
     <ul class="lista-reproduccion">
       <li data-url-hls="168.231.71.30:8080/hls/0/stream.m3u8?">Canal 1</li>
       <li data-url-hls="#">Canal 2</li>
@@ -199,9 +194,6 @@ const logoutBtn = document.getElementById('logout-btn');
 const slowBadge = document.getElementById('badge-lento');
 const bufferingOverlay = document.getElementById('overlay-buffering');
 const viewerCountEl = document.getElementById('viewer-count-num');
-const xtreamInput = document.getElementById('xtream-input');
-const xtreamAddBtn = document.getElementById('xtream-add');
-const warnBox = document.getElementById('warn');
 let hls;
 let canalSeleccionado = null;
 let currentStreamUrl = null;
@@ -218,6 +210,7 @@ let retryTimerId = null;
 const MAX_RETRY_ATTEMPTS = 5;
 const BASE_RETRY_MS = 1000;
 const MAX_RETRY_MS = 10000;
+let channelsRealtime = null;
 
 async function ensureAuthenticated() {
   const { data: { session } } = await window.supabaseClient.auth.getSession();
@@ -234,12 +227,7 @@ function normalizeUrl(possibleUrl) {
   return possibleUrl;
 }
 
-function showWarn(msg) {
-  if (!warnBox) return;
-  warnBox.textContent = msg;
-  warnBox.style.display = 'block';
-  setTimeout(() => { warnBox.style.display = 'none'; }, 5000);
-}
+// (Eliminado: UI de aviso para URLs personalizadas)
 
 function parseExpiresSecondsFromUrl(urlString) {
   try {
@@ -362,14 +350,7 @@ function reproducir(urlHls, elemento) {
         renewAndReload('http' + status);
         return;
       }
-      if (data && data.type === Hls.ErrorTypes.NETWORK_ERROR && status === 0) {
-        // Posible CORS o Mixed Content
-        if (window.location.protocol === 'https:' && /^http:/.test(currentStreamUrl)) {
-          showWarn('Contenido mixto bloqueado (HTTP en página HTTPS). Usa URL HTTPS si está disponible.');
-        } else {
-          showWarn('Error de red/CORS al cargar el stream. Verifica permisos del servidor.');
-        }
-      }
+      // (Eliminado: avisos de CORS/mixed content para la UI de URL personalizada)
       if (data && data.fatal) {
         switch (data.type) {
           case Hls.ErrorTypes.NETWORK_ERROR:
@@ -468,6 +449,64 @@ function estimateBandwidthBps() {
   return null;
 }
 
+function deriveChannelFields(record) {
+  const name = record.name || record.title || record.nombre || 'Canal';
+  const url = record.url_hls || record.url || record.stream_url || record.hls_url || '';
+  return { name, url };
+}
+
+async function fetchAndRenderChannels() {
+  try {
+    let query = window.supabaseClient.from('channels').select('*');
+    // Filtros opcionales si existen
+    try { query = query.eq('enabled', true); } catch(_) {}
+    try { query = query.order('sort_order', { ascending: true }); } catch(_) {}
+    const { data, error } = await query;
+    if (error) { console.error('Error cargando canales', error); return; }
+    renderChannels(Array.isArray(data) ? data : []);
+  } catch (e) {
+    console.error('Excepción cargando canales', e);
+  }
+}
+
+function renderChannels(records) {
+  if (!listaReproduccion) return;
+  listaReproduccion.innerHTML = '';
+  const valid = [];
+  for (const rec of records) {
+    const { name, url } = deriveChannelFields(rec);
+    if (!url) continue;
+    valid.push({ name, url });
+  }
+  for (const ch of valid) {
+    const li = document.createElement('li');
+    li.setAttribute('data-url-hls', ch.url);
+    li.textContent = ch.name;
+    listaReproduccion.appendChild(li);
+  }
+  if (valid.length > 0) {
+    const firstItem = listaReproduccion.querySelector('li[data-url-hls]:not([data-url-hls="#"])');
+    if (firstItem) {
+      reproducir(firstItem.getAttribute('data-url-hls'), firstItem);
+    }
+  }
+}
+
+function subscribeChannelsRealtime() {
+  try {
+    if (channelsRealtime) {
+      channelsRealtime.unsubscribe();
+      channelsRealtime = null;
+    }
+    channelsRealtime = window.supabaseClient
+      .channel('public:channels-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'channels' }, (payload) => {
+        fetchAndRenderChannels();
+      })
+      .subscribe();
+  } catch (e) { console.error('No se pudo suscribir a cambios de canales', e); }
+}
+
 listaReproduccion.addEventListener('click', (e) => {
   if (e.target.tagName === 'LI') {
     const urlHls = e.target.getAttribute('data-url-hls');
@@ -477,24 +516,10 @@ listaReproduccion.addEventListener('click', (e) => {
   }
 });
 
-xtreamAddBtn.addEventListener('click', () => {
-  const raw = (xtreamInput.value || '').trim();
-  if (!raw) return;
-  const url = normalizeUrl(raw);
-  // Validar formato simple .m3u8
-  if (!/\.m3u8(\?|$)/i.test(url)) {
-    showWarn('La URL no parece un stream HLS (.m3u8).');
-  }
-  let item = document.createElement('li');
-  item.setAttribute('data-url-hls', url);
-  item.textContent = 'URL personalizada';
-  listaReproduccion.insertBefore(item, listaReproduccion.firstChild);
-  reproducir(url, item);
-});
-
 logoutBtn.addEventListener('click', async () => {
   await window.supabaseClient.auth.signOut();
   leavePresence();
+  try { if (channelsRealtime) channelsRealtime.unsubscribe(); } catch(_) {}
   window.location.href = 'index.html';
 });
 
@@ -521,10 +546,8 @@ logoutBtn.addEventListener('click', async () => {
     }
   });
 
-  const firstItem = listaReproduccion.querySelector('li[data-url-hls]:not([data-url-hls="#"])');
-  if (firstItem) {
-    reproducir(firstItem.getAttribute('data-url-hls'), firstItem);
-  }
+  await fetchAndRenderChannels();
+  subscribeChannelsRealtime();
 })();
 </script>
 
