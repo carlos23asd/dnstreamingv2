@@ -12,6 +12,11 @@
   <title>Reproductor de Video con HLS</title>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script>
+    const SUPABASE_URL = 'https://udaloepzgkgjvbyzkhmy.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVkYWxvZXB6Z2tnanZieXpraG15Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDA0NDk2NjYsImV4cCI6MjA1NjAyNTY2Nn0.VcY3iVmYTfb5V0wYoGY3HPyNHKwcrTjA55Lf_lE_NL8';
+    window.supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  </script>
   <style>
     /* --- Estilos mejorados --- */
     :root {
@@ -130,6 +135,10 @@
 <body>
   <div class="container">
     <h1 class="titulo">Deportes en Vivo</h1>
+    <div style="display:flex; justify-content: space-between; align-items:center; margin-bottom: 12px;">
+      <div></div>
+      <button id="logout-btn" style="background:#e74c3c;color:#fff;border:none;border-radius:8px;padding:8px 12px;cursor:pointer;">Cerrar sesión</button>
+    </div>
     <video id="video-player" class="reproductor" controls autoplay muted></video>
     <h2 class="subtitulo">Lista de Reproducción</h2>
     <ul class="lista-reproduccion">
@@ -146,25 +155,63 @@
 <script>
 const videoPlayer = document.getElementById('video-player');
 const listaReproduccion = document.querySelector('.lista-reproduccion');
+const logoutBtn = document.getElementById('logout-btn');
 let hls;
 let canalSeleccionado = null;
+
+async function ensureAuthenticated() {
+  const { data: { session } } = await window.supabaseClient.auth.getSession();
+  if (!session) {
+    window.location.href = 'index.html';
+  }
+}
+
+function reproducir(urlHls, elemento) {
+  if (canalSeleccionado) canalSeleccionado.classList.remove('seleccionado');
+  if (elemento) {
+    elemento.classList.add('seleccionado');
+    canalSeleccionado = elemento;
+  }
+
+  if (hls) {
+    hls.destroy();
+  }
+
+  if (Hls.isSupported()) {
+    hls = new Hls();
+    hls.loadSource(urlHls);
+    hls.attachMedia(videoPlayer);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => videoPlayer.play());
+    hls.on(Hls.Events.ERROR, function(event, data) {
+      console.error('HLS error', data);
+    });
+  } else if (videoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
+    videoPlayer.src = urlHls;
+    videoPlayer.addEventListener('loadedmetadata', () => videoPlayer.play());
+  }
+}
 
 listaReproduccion.addEventListener('click', (e) => {
   if (e.target.tagName === 'LI') {
     const urlHls = e.target.getAttribute('data-url-hls');
-    if (urlHls) {
-      if (canalSeleccionado) canalSeleccionado.classList.remove('seleccionado');
-      e.target.classList.add('seleccionado');
-      canalSeleccionado = e.target;
-
-      if (hls) hls.destroy();
-      hls = new Hls();
-      hls.loadSource(urlHls);
-      hls.attachMedia(videoPlayer);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => videoPlayer.play());
+    if (urlHls && urlHls !== '#') {
+      reproducir(urlHls, e.target);
     }
   }
 });
+
+logoutBtn.addEventListener('click', async () => {
+  await window.supabaseClient.auth.signOut();
+  window.location.href = 'index.html';
+});
+
+(async function init() {
+  await ensureAuthenticated();
+  const firstItem = listaReproduccion.querySelector('li[data-url-hls]:not([data-url-hls="#"])');
+  if (firstItem) {
+    reproducir(firstItem.getAttribute('data-url-hls'), firstItem);
+  }
+})();
 </script>
 
 </body>
