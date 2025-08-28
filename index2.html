@@ -210,6 +210,7 @@ let retryTimerId = null;
 const MAX_RETRY_ATTEMPTS = 5;
 const BASE_RETRY_MS = 1000;
 const MAX_RETRY_MS = 10000;
+let channelsRealtime = null;
 
 async function ensureAuthenticated() {
   const { data: { session } } = await window.supabaseClient.auth.getSession();
@@ -448,6 +449,64 @@ function estimateBandwidthBps() {
   return null;
 }
 
+function deriveChannelFields(record) {
+  const name = record.name || record.title || record.nombre || 'Canal';
+  const url = record.url_hls || record.url || record.stream_url || record.hls_url || '';
+  return { name, url };
+}
+
+async function fetchAndRenderChannels() {
+  try {
+    let query = window.supabaseClient.from('channels').select('*');
+    // Filtros opcionales si existen
+    try { query = query.eq('enabled', true); } catch(_) {}
+    try { query = query.order('sort_order', { ascending: true }); } catch(_) {}
+    const { data, error } = await query;
+    if (error) { console.error('Error cargando canales', error); return; }
+    renderChannels(Array.isArray(data) ? data : []);
+  } catch (e) {
+    console.error('Excepción cargando canales', e);
+  }
+}
+
+function renderChannels(records) {
+  if (!listaReproduccion) return;
+  listaReproduccion.innerHTML = '';
+  const valid = [];
+  for (const rec of records) {
+    const { name, url } = deriveChannelFields(rec);
+    if (!url) continue;
+    valid.push({ name, url });
+  }
+  for (const ch of valid) {
+    const li = document.createElement('li');
+    li.setAttribute('data-url-hls', ch.url);
+    li.textContent = ch.name;
+    listaReproduccion.appendChild(li);
+  }
+  if (valid.length > 0) {
+    const firstItem = listaReproduccion.querySelector('li[data-url-hls]:not([data-url-hls="#"])');
+    if (firstItem) {
+      reproducir(firstItem.getAttribute('data-url-hls'), firstItem);
+    }
+  }
+}
+
+function subscribeChannelsRealtime() {
+  try {
+    if (channelsRealtime) {
+      channelsRealtime.unsubscribe();
+      channelsRealtime = null;
+    }
+    channelsRealtime = window.supabaseClient
+      .channel('public:channels-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'channels' }, (payload) => {
+        fetchAndRenderChannels();
+      })
+      .subscribe();
+  } catch (e) { console.error('No se pudo suscribir a cambios de canales', e); }
+}
+
 listaReproduccion.addEventListener('click', (e) => {
   if (e.target.tagName === 'LI') {
     const urlHls = e.target.getAttribute('data-url-hls');
@@ -460,6 +519,7 @@ listaReproduccion.addEventListener('click', (e) => {
 logoutBtn.addEventListener('click', async () => {
   await window.supabaseClient.auth.signOut();
   leavePresence();
+  try { if (channelsRealtime) channelsRealtime.unsubscribe(); } catch(_) {}
   window.location.href = 'index.html';
 });
 
@@ -486,10 +546,8 @@ logoutBtn.addEventListener('click', async () => {
     }
   });
 
-  const firstItem = listaReproduccion.querySelector('li[data-url-hls]:not([data-url-hls="#"])');
-  if (firstItem) {
-    reproducir(firstItem.getAttribute('data-url-hls'), firstItem);
-  }
+  await fetchAndRenderChannels();
+  subscribeChannelsRealtime();
 })();
 </script>
 
