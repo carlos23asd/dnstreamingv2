@@ -147,13 +147,15 @@
       background: rgba(0,0,0,0.35);
       color: #fff;
       font-weight: 600;
-      backdrop-filter: blur(2px);
       border-radius: 15px;
       justify-content: center;
       align-items: center;
       text-align: center;
     }
     .player-wrap { position: relative; }
+    @media(max-width:768px){
+      .overlay-buffering { backdrop-filter: none; }
+    }
   </style>
 </head>
 
@@ -168,7 +170,7 @@
       <button id="logout-btn" style="background:#e74c3c;color:#fff;border:none;border-radius:8px;padding:8px 12px;cursor:pointer;">Cerrar sesión</button>
     </div>
     <div class="player-wrap">
-      <video id="video-player" class="reproductor" controls autoplay muted></video>
+      <video id="video-player" class="reproductor" controls autoplay muted playsinline></video>
       <div id="overlay-buffering" class="overlay-buffering">
         Acumulando buffer por conexión lenta...
       </div>
@@ -203,6 +205,11 @@ let isSlowMode = false;
 let bufferingTimerId = null;
 let presenceChannel = null;
 let presenceTopic = null;
+let retryCount = 0;
+let retryTimerId = null;
+const MAX_RETRY_ATTEMPTS = 5;
+const BASE_RETRY_MS = 1000;
+const MAX_RETRY_MS = 10000;
 
 async function ensureAuthenticated() {
   const { data: { session } } = await window.supabaseClient.auth.getSession();
@@ -213,7 +220,8 @@ async function ensureAuthenticated() {
 
 function normalizeUrl(possibleUrl) {
   if (!/^https?:\/\//i.test(possibleUrl)) {
-    return 'http://' + possibleUrl;
+    const scheme = window.location.protocol === 'https:' ? 'https://' : 'http://';
+    return scheme + possibleUrl;
   }
   return possibleUrl;
 }
@@ -275,6 +283,28 @@ async function renewAndReload(reason) {
   reproducir(freshUrl, canalSeleccionado);
 }
 
+function resetRetry() {
+  retryCount = 0;
+  if (retryTimerId) {
+    clearTimeout(retryTimerId);
+    retryTimerId = null;
+  }
+}
+
+function scheduleBackoffRetry(reason) {
+  if (!currentStreamUrl) return;
+  if (retryCount >= MAX_RETRY_ATTEMPTS) {
+    console.warn('Límite de reintentos alcanzado');
+    return;
+  }
+  const delay = Math.min(BASE_RETRY_MS * Math.pow(2, retryCount), MAX_RETRY_MS);
+  retryCount++;
+  if (retryTimerId) clearTimeout(retryTimerId);
+  retryTimerId = setTimeout(() => {
+    reproducir(currentStreamUrl, canalSeleccionado);
+  }, delay);
+}
+
 function reproducir(urlHls, elemento) {
   if (canalSeleccionado) canalSeleccionado.classList.remove('seleccionado');
   if (elemento) {
@@ -309,7 +339,7 @@ function reproducir(urlHls, elemento) {
     hls = new Hls(hlsConfig);
     hls.loadSource(urlHlsNormalized);
     hls.attachMedia(videoPlayer);
-    hls.on(Hls.Events.MANIFEST_PARSED, () => videoPlayer.play());
+    hls.on(Hls.Events.MANIFEST_PARSED, () => { resetRetry(); videoPlayer.play(); });
     hls.on(Hls.Events.ERROR, function(event, data) {
       console.error('HLS error', data);
       const status = data && data.response && data.response.code;
@@ -320,14 +350,14 @@ function reproducir(urlHls, elemento) {
       if (data && data.fatal) {
         switch (data.type) {
           case Hls.ErrorTypes.NETWORK_ERROR:
-            renewAndReload('fatal-network');
+            scheduleBackoffRetry('fatal-network');
             break;
           case Hls.ErrorTypes.MEDIA_ERROR:
             hls.recoverMediaError();
             break;
           default:
             hls.destroy();
-            reproducir(currentStreamUrl, canalSeleccionado);
+            scheduleBackoffRetry('fatal-other');
             break;
         }
       }
@@ -335,7 +365,7 @@ function reproducir(urlHls, elemento) {
     hls.on(Hls.Events.FRAG_LOADED, () => clearBufferingState());
   } else if (videoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
     videoPlayer.src = urlHlsNormalized;
-    videoPlayer.addEventListener('loadedmetadata', () => videoPlayer.play());
+    videoPlayer.addEventListener('loadedmetadata', () => { resetRetry(); videoPlayer.play(); });
   }
 }
 
@@ -347,6 +377,9 @@ function setBufferingState() {
       videoPlayer.pause();
     }
     bufferingOverlay.style.display = 'flex';
+    if (hls && typeof hls.stopLoad === 'function') {
+      hls.stopLoad();
+    }
   }, LONG_BUFFERING_MS);
 }
 
@@ -358,6 +391,9 @@ function clearBufferingState() {
   bufferingOverlay.style.display = 'none';
   if (isSlowMode && videoPlayer.paused && videoPlayer.readyState >= 2) {
     videoPlayer.play().catch(() => {});
+  }
+  if (hls && typeof hls.startLoad === 'function') {
+    hls.startLoad(-1);
   }
 }
 
@@ -436,6 +472,16 @@ logoutBtn.addEventListener('click', async () => {
   videoPlayer.addEventListener('stalled', setBufferingState);
   videoPlayer.addEventListener('playing', clearBufferingState);
   videoPlayer.addEventListener('canplay', clearBufferingState);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      try { if (hls && hls.stopLoad) hls.stopLoad(); } catch(_) {}
+      if (!videoPlayer.paused) videoPlayer.pause();
+    } else {
+      try { if (hls && hls.startLoad) hls.startLoad(-1); } catch(_) {}
+      if (videoPlayer.paused) videoPlayer.play().catch(() => {});
+    }
+  });
 
   const firstItem = listaReproduccion.querySelector('li[data-url-hls]:not([data-url-hls="#"])');
   if (firstItem) {
