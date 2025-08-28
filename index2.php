@@ -158,6 +158,74 @@ const listaReproduccion = document.querySelector('.lista-reproduccion');
 const logoutBtn = document.getElementById('logout-btn');
 let hls;
 let canalSeleccionado = null;
+let currentStreamUrl = null;
+let renewTimerId = null;
+const RENEW_BUFFER_MS = 30000;
+
+function normalizeUrl(possibleUrl) {
+  if (!/^https?:\/\//i.test(possibleUrl)) {
+    return 'http://' + possibleUrl;
+  }
+  return possibleUrl;
+}
+
+function parseExpiresSecondsFromUrl(urlString) {
+  try {
+    const u = new URL(urlString);
+    const exp = u.searchParams.get('expires');
+    if (!exp) return null;
+    const expNum = Number(exp);
+    return Number.isFinite(expNum) ? expNum : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function stripAuthParams(urlString) {
+  try {
+    const u = new URL(urlString);
+    u.searchParams.delete('token');
+    u.searchParams.delete('expires');
+    return u.toString();
+  } catch (_) {
+    return urlString;
+  }
+}
+
+function scheduleTokenRenewal(urlString) {
+  if (renewTimerId) {
+    clearTimeout(renewTimerId);
+    renewTimerId = null;
+  }
+  const expiresSec = parseExpiresSecondsFromUrl(urlString);
+  if (!expiresSec) return;
+  const msUntilExpiry = expiresSec * 1000 - Date.now();
+  const msUntilRenew = msUntilExpiry - RENEW_BUFFER_MS;
+  if (msUntilRenew <= 0) {
+    renewAndReload('expired');
+    return;
+  }
+  renewTimerId = setTimeout(() => renewAndReload('scheduled'), msUntilRenew);
+}
+
+async function getFreshSignedUrl(baseUrl) {
+  try {
+    // Integración típica: renovar vía función/endpoint propio y devolver una URL firmada nueva.
+    // const { data, error } = await window.supabaseClient.functions.invoke('renew_stream', { body: { baseUrl } });
+    // if (error) throw error;
+    // if (data && data.url) return data.url;
+  } catch (e) {
+    console.error('Error al renovar URL firmada', e);
+  }
+  return currentStreamUrl || baseUrl;
+}
+
+async function renewAndReload(reason) {
+  if (!currentStreamUrl) return;
+  const baseUrl = stripAuthParams(currentStreamUrl);
+  const freshUrl = await getFreshSignedUrl(baseUrl);
+  reproducir(freshUrl, canalSeleccionado);
+}
 
 async function ensureAuthenticated() {
   const { data: { session } } = await window.supabaseClient.auth.getSession();
@@ -177,16 +245,39 @@ function reproducir(urlHls, elemento) {
     hls.destroy();
   }
 
+  const urlHlsNormalized = normalizeUrl(urlHls);
+  currentStreamUrl = urlHlsNormalized;
+  scheduleTokenRenewal(currentStreamUrl);
+
   if (Hls.isSupported()) {
     hls = new Hls();
-    hls.loadSource(urlHls);
+    hls.loadSource(urlHlsNormalized);
     hls.attachMedia(videoPlayer);
     hls.on(Hls.Events.MANIFEST_PARSED, () => videoPlayer.play());
     hls.on(Hls.Events.ERROR, function(event, data) {
       console.error('HLS error', data);
+      const status = data && data.response && data.response.code;
+      if (data && data.type === Hls.ErrorTypes.NETWORK_ERROR && (status === 401 || status === 403)) {
+        renewAndReload('http' + status);
+        return;
+      }
+      if (data && data.fatal) {
+        switch (data.type) {
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            renewAndReload('fatal-network');
+            break;
+          case Hls.ErrorTypes.MEDIA_ERROR:
+            hls.recoverMediaError();
+            break;
+          default:
+            hls.destroy();
+            reproducir(currentStreamUrl, canalSeleccionado);
+            break;
+        }
+      }
     });
   } else if (videoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
-    videoPlayer.src = urlHls;
+    videoPlayer.src = urlHlsNormalized;
     videoPlayer.addEventListener('loadedmetadata', () => videoPlayer.play());
   }
 }
