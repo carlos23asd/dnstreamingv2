@@ -76,7 +76,7 @@
       (async () => {
           const { data: { session } } = await supabaseClient.auth.getSession();
           if (session) {
-              window.location.href = 'index2.php';
+              window.location.href = 'index2.html';
           }
       })();
 
@@ -99,8 +99,8 @@
         if (error) {
           errorMessage.textContent = 'Error: ' + error.message;
         } else {
-          // Redirige a index2.php tras un inicio de sesión exitoso
-          window.location.href = 'index2.php';
+          // Redirige a index2.html tras un inicio de sesión exitoso
+          window.location.href = 'index2.html';
         }
       });
 

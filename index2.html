@@ -1,7 +1,3 @@
-
-<?php
-// index.php
-?>
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -208,6 +204,13 @@ let bufferingTimerId = null;
 let presenceChannel = null;
 let presenceTopic = null;
 
+async function ensureAuthenticated() {
+  const { data: { session } } = await window.supabaseClient.auth.getSession();
+  if (!session) {
+    window.location.href = 'index.html';
+  }
+}
+
 function normalizeUrl(possibleUrl) {
   if (!/^https?:\/\//i.test(possibleUrl)) {
     return 'http://' + possibleUrl;
@@ -256,7 +259,6 @@ function scheduleTokenRenewal(urlString) {
 
 async function getFreshSignedUrl(baseUrl) {
   try {
-    // Integración típica: renovar vía función/endpoint propio y devolver una URL firmada nueva.
     // const { data, error } = await window.supabaseClient.functions.invoke('renew_stream', { body: { baseUrl } });
     // if (error) throw error;
     // if (data && data.url) return data.url;
@@ -271,23 +273,6 @@ async function renewAndReload(reason) {
   const baseUrl = stripAuthParams(currentStreamUrl);
   const freshUrl = await getFreshSignedUrl(baseUrl);
   reproducir(freshUrl, canalSeleccionado);
-}
-
-async function ensureAuthenticated() {
-  const { data: { session } } = await window.supabaseClient.auth.getSession();
-  if (!session) {
-    window.location.href = 'index.html';
-  }
-}
-
-function estimateBandwidthBps() {
-  // Heurística básica usando Network Information API (no disponible en todos los navegadores)
-  const navConn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-  if (navConn && navConn.downlink) {
-    // downlink en Mbps
-    return navConn.downlink * 1_000_000;
-  }
-  return null;
 }
 
 function reproducir(urlHls, elemento) {
@@ -379,7 +364,6 @@ function clearBufferingState() {
 function channelKeyFromUrl(urlString) {
   try {
     const u = new URL(urlString);
-    // Usa host + pathname como clave de stream
     return `${u.host}${u.pathname}`.replace(/[^a-zA-Z0-9_-]/g, '_');
   } catch (_) {
     return 'stream_default';
@@ -417,6 +401,14 @@ function joinPresenceForUrl(urlString) {
   });
 }
 
+function estimateBandwidthBps() {
+  const navConn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (navConn && navConn.downlink) {
+    return navConn.downlink * 1_000_000;
+  }
+  return null;
+}
+
 listaReproduccion.addEventListener('click', (e) => {
   if (e.target.tagName === 'LI') {
     const urlHls = e.target.getAttribute('data-url-hls');
@@ -440,7 +432,6 @@ logoutBtn.addEventListener('click', async () => {
     slowBadge.classList.add('visible');
   }
 
-  // Eventos de buffering para pausar/reanudar en modo lento
   videoPlayer.addEventListener('waiting', setBufferingState);
   videoPlayer.addEventListener('stalled', setBufferingState);
   videoPlayer.addEventListener('playing', clearBufferingState);
